@@ -1,0 +1,318 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>LaunchPilot AI</title>
+<style>
+:root{--bg:#f7f8fa;--surface:#fff;--text:#14171c;--muted:#5b6370;--border:#dfe3ea;--accent:#2d5bd6;--accent-text:#fff;--danger:#b42318;--ok:#1f7a4d;--focus:#2d5bd6}
+[data-theme=dark]{--bg:#0f1218;--surface:#171b23;--text:#e9ecf2;--muted:#9aa3b2;--border:#2a303b;--accent:#6e93ff;--accent-text:#0b1020;--danger:#ff8a80;--ok:#6fd39c;--focus:#8fb0ff}
+*{box-sizing:border-box}
+body{margin:0;font:16px/1.55 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;background:var(--bg);color:var(--text)}
+a{color:var(--accent)}
+:focus-visible{outline:3px solid var(--focus);outline-offset:2px}
+header.top{display:flex;flex-wrap:wrap;gap:12px;align-items:center;justify-content:space-between;padding:14px 20px;border-bottom:1px solid var(--border);background:var(--surface);position:sticky;top:0;z-index:5}
+.brand{font-weight:700;letter-spacing:-.02em;font-size:18px;text-decoration:none;color:var(--text)}
+.brand span{color:var(--accent)}
+nav a,nav button{margin-left:14px;background:none;border:0;color:var(--text);font:inherit;cursor:pointer;padding:6px 2px;text-decoration:none}
+nav a[aria-current=page]{color:var(--accent)}
+main{max-width:980px;margin:0 auto;padding:32px 20px 64px}
+.card{background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:20px;margin-bottom:16px}
+.btn{display:inline-block;background:var(--accent);color:var(--accent-text);border:0;border-radius:8px;padding:10px 16px;font:inherit;font-weight:600;cursor:pointer;text-decoration:none}
+.btn[disabled]{opacity:.55;cursor:not-allowed}
+.btn.ghost{background:transparent;color:var(--text);border:1px solid var(--border)}
+label{display:block;font-weight:600;margin:12px 0 4px}
+input,textarea,select{width:100%;padding:10px;border:1px solid var(--border);border-radius:8px;background:var(--bg);color:var(--text);font:inherit}
+.err{color:var(--danger);font-size:14px;min-height:0}
+.msg{padding:10px 14px;border-radius:8px;border:1px solid var(--border);margin:12px 0}
+.msg.error{border-color:var(--danger);color:var(--danger)}
+.msg.ok{border-color:var(--ok);color:var(--ok)}
+.muted{color:var(--muted)}
+.grid{display:grid;gap:16px;grid-template-columns:repeat(auto-fit,minmax(220px,1fr))}
+.hero h1{font-size:clamp(28px,5vw,44px);line-height:1.15;letter-spacing:-.02em;margin:8px 0 12px}
+.pill{display:inline-block;font-size:13px;border:1px solid var(--border);border-radius:99px;padding:2px 10px;color:var(--muted)}
+pre.out{white-space:pre-wrap;background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:12px}
+@media (prefers-reduced-motion:reduce){*{transition:none!important;animation:none!important}}
+</style>
+</head>
+<body>
+<header class="top">
+ <a class="brand" href="#/">LaunchPilot <span>AI</span></a>
+ <nav aria-label="Main">
+  <a href="#/pricing" data-nav="pricing">Pricing</a>
+  <a href="#/contact" data-nav="contact">Contact</a>
+  <a href="#/dashboard" data-nav="dashboard" data-auth>Dashboard</a>
+  <a href="#/login" data-nav="login" data-guest>Log in</a>
+  <button type="button" id="theme" aria-label="Toggle light or dark theme">Theme</button>
+  <button type="button" id="logout" data-auth hidden>Log out</button>
+ </nav>
+</header>
+<main id="app" tabindex="-1" aria-live="polite"></main>
+<script>
+const CONFIG = {
+  apiBase: location.origin,
+  // Fill these ONLY after confirming the routes in the existing backend.
+  endpoints: { session: null, login: null, register: null, logout: null, membership: null, ideaValidate: null, contact: null },
+  checkoutUrl: "https://whop.com/checkout/ch_Gclt3cVUraYDOaY/?session=chs_FQWAKAmWXHZSO4",
+  timeoutMs: 15000
+};
+const state = { user: null, plan: "free", authChecked: false };
+const $ = (s, r = document) => r.querySelector(s);
+const esc = v => String(v ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+
+class ApiError extends Error {}
+async function api(key, body, method = "POST") {
+  const path = CONFIG.endpoints[key];
+  if (!path) throw new ApiError(`The "${key}" endpoint is not configured yet. Add its route to CONFIG.endpoints after checking the backend.`);
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), CONFIG.timeoutMs);
+  let res;
+  try {
+    res = await fetch(CONFIG.apiBase + path, {
+      method, credentials: "include", signal: ctrl.signal,
+      headers: body ? { "Content-Type": "application/json", Accept: "application/json" } : { Accept: "application/json" },
+      body: body ? JSON.stringify(body) : undefined
+    });
+  } catch (e) {
+    throw new ApiError(e.name === "AbortError" ? "The request timed out. Please try again." : "Could not reach the server. Check your connection or API base URL.");
+  } finally { clearTimeout(timer); }
+  let data = null;
+  try { data = await res.json(); } catch { /* non-JSON */ }
+  if (res.status === 401 || res.status === 403) throw new ApiError("You are not authorized. Please log in again.");
+  if (!res.ok) throw new ApiError((data && data.error) || `Server error (${res.status}).`);
+  if (data === null) throw new ApiError("The server returned an invalid response.");
+  return data;
+}
+
+function setBusy(btn, busy, label) {
+  if (!btn) return;
+  btn.disabled = busy;
+  if (busy) { btn.dataset.label = btn.textContent; btn.textContent = label || "Working..."; }
+  else if (btn.dataset.label) btn.textContent = btn.dataset.label;
+}
+function show(el, text, kind = "error") { el.innerHTML = `<div class="msg ${kind}" role="${kind === "error" ? "alert" : "status"}">${esc(text)}</div>`; }
+function goCheckout() { window.location.href = CONFIG.checkoutUrl; }
+function renderUpgrade() {
+  return `<div class="card"><h3>Pro plan</h3><p class="muted">Pro access is active only when the server confirms it.</p>
+  <button class="btn" type="button" data-checkout>Upgrade to Pro</button></div>`;
+}
+
+function validate(fields) {
+  const errors = {};
+  for (const [name, rule] of Object.entries(fields)) {
+    if (rule.required && !rule.value.trim()) errors[name] = "This field is required.";
+    else if (rule.email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(rule.value)) errors[name] = "Enter a valid email address.";
+    else if (rule.min && rule.value.trim().length < rule.min) errors[name] = `Use at least ${rule.min} characters.`;
+  }
+  return errors;
+}
+function setFieldErrors(form, errors) {
+  form.querySelectorAll(".err").forEach(e => e.textContent = "");
+  for (const [name, msg] of Object.entries(errors)) {
+    const e = form.querySelector(`[data-err="${name}"]`);
+    if (e) e.textContent = msg;
+  }
+}
+
+const views = {
+  home: () => `
+    <section class="hero card">
+      <span class="pill">From idea to launch, intelligently.</span>
+      <h1>Turn Your Next Idea Into a Launch-Ready Product.</h1>
+      <p class="muted">Validate ideas, shape product blueprints, draft sales pages and plan your launch in one workspace.</p>
+      <p><a class="btn" href="#/register">Create account</a> <a class="btn ghost" href="#/pricing">See pricing</a></p>
+    </section>
+    <section class="grid">
+      <div class="card"><h3>1. Validate</h3><p class="muted">Structure your idea, audience and assumptions before you build.</p></div>
+      <div class="card"><h3>2. Build</h3><p class="muted">Turn validated ideas into a blueprint, sales copy and pricing hypotheses.</p></div>
+      <div class="card"><h3>3. Launch</h3><p class="muted">Plan tasks, track competitors and keep marketing content organized.</p></div>
+    </section>`,
+
+  pricing: () => `
+    <h2>Pricing</h2>
+    <div class="grid">
+      <div class="card"><h3>Free</h3><p>3 total AI generations.</p><p class="muted">Current plan for unsubscribed accounts.</p></div>
+      <div class="card"><h3>Pro</h3><p>100 AI generations per billing month, as configured on the server.</p>
+        <button class="btn" type="button" data-checkout>Upgrade to Pro</button></div>
+    </div>`,
+
+  contact: () => `
+    <h2>Contact</h2>
+    <form class="card" id="contactForm" novalidate>
+      <label for="cName">Name</label><input id="cName" name="name" autocomplete="name">
+      <div class="err" data-err="name"></div>
+      <label for="cEmail">Email</label><input id="cEmail" name="email" type="email" autocomplete="email">
+      <div class="err" data-err="email"></div>
+      <label for="cMsg">Message</label><textarea id="cMsg" name="message" rows="5"></textarea>
+      <div class="err" data-err="message"></div>
+      <p><button class="btn" type="submit">Send message</button></p>
+      <div id="contactStatus" aria-live="polite"></div>
+    </form>`,
+
+  login: () => authForm("login"),
+  register: () => authForm("register"),
+
+  dashboard: () => {
+    if (!state.user) return `<div class="card"><p>Please <a href="#/login">log in</a> to continue.</p></div>`;
+    return `
+      <h2>Welcome${state.user.name ? ", " + esc(state.user.name) : ""}</h2>
+      <div class="grid">
+        <div class="card"><h3>Membership</h3><p>${state.plan === "pro" ? "Pro (confirmed by server)" : "Free"}</p></div>
+        <div class="card"><h3>Remaining AI generations</h3><p class="muted">Shown once the server returns your usage.</p></div>
+      </div>
+      <div class="card"><h3>Quick actions</h3>
+        <p><a class="btn" href="#/idea">Idea Validator</a> <a class="btn ghost" href="#/billing">Usage &amp; billing</a></p></div>
+      <div class="card"><h3>Recent projects</h3><p class="muted">No projects yet. Saved projects appear here once the server stores them.</p></div>
+      <p class="muted">Other tools (Blueprint, Sales Page, Pricing, Marketing, Calendar, Competitors) are not built in this version.</p>`;
+  },
+
+  idea: () => {
+    if (!state.user) return `<div class="card"><p>Please <a href="#/login">log in</a> first.</p></div>`;
+    return `
+      <h2>Idea Validator</h2>
+      <form class="card" id="ideaForm" novalidate>
+        <label for="iIdea">Product idea</label><input id="iIdea" name="idea">
+        <div class="err" data-err="idea"></div>
+        <label for="iAud">Audience</label><input id="iAud" name="audience">
+        <div class="err" data-err="audience"></div>
+        <label for="iProb">Problem</label><textarea id="iProb" name="problem" rows="3"></textarea>
+        <div class="err" data-err="problem"></div>
+        <label for="iCat">Category</label><input id="iCat" name="category">
+        <label for="iBud">Budget (optional)</label><input id="iBud" name="budget" inputmode="decimal">
+        <p><button class="btn" type="submit">Validate idea</button></p>
+        <div id="ideaStatus" aria-live="polite"></div>
+        <pre class="out" id="ideaOut" hidden></pre>
+      </form>`;
+  },
+
+  billing: () => {
+    if (!state.user) return `<div class="card"><p>Please <a href="#/login">log in</a> first.</p></div>`;
+    return `
+      <h2>Usage &amp; billing</h2>
+      <div class="card"><p>Plan: <strong>${state.plan === "pro" ? "Pro" : "Free"}</strong></p>
+        <p class="muted">Free: 3 total AI generations. Pro: 100 per billing month, as configured on the server.</p>
+        <p><button class="btn ghost" type="button" id="refreshMembership">Refresh membership</button></p>
+        <div id="billStatus" aria-live="polite"></div></div>
+      ${state.plan === "pro" ? "" : renderUpgrade()}`;
+  }
+};
+
+function authForm(mode) {
+  const isReg = mode === "register";
+  return `
+    <h2>${isReg ? "Create account" : "Log in"}</h2>
+    <form class="card" id="authForm" novalidate>
+      ${isReg ? `<label for="aName">Name</label><input id="aName" name="name" autocomplete="name"><div class="err" data-err="name"></div>` : ""}
+      <label for="aEmail">Email</label><input id="aEmail" name="email" type="email" autocomplete="email">
+      <div class="err" data-err="email"></div>
+      <label for="aPass">Password</label><input id="aPass" name="password" type="password" autocomplete="${isReg ? "new-password" : "current-password"}">
+      <div class="err" data-err="password"></div>
+      <p><button class="btn" type="submit">${isReg ? "Create account" : "Log in"}</button></p>
+      <div id="authStatus" aria-live="polite"></div>
+    </form>`;
+}
+
+function render() {
+  const route = (location.hash.replace(/^#\/?/, "") || "home").split("?")[0];
+  const name = views[route] ? route : "home";
+  const protectedRoute = ["dashboard", "idea", "billing"].includes(name);
+  if (protectedRoute && !state.user) { location.hash = "#/login"; return; }
+  $("#app").innerHTML = views[name]();
+  document.querySelectorAll("[data-nav]").forEach(a => a.setAttribute("aria-current", a.dataset.nav === name ? "page" : "false"));
+  document.querySelectorAll("[data-auth]").forEach(el => el.hidden = !state.user);
+  document.querySelectorAll("[data-guest]").forEach(el => el.hidden = !!state.user);
+  $("#app").focus({ preventScroll: true });
+}
+
+document.addEventListener("click", e => {
+  if (e.target.closest("[data-checkout]")) { e.preventDefault(); goCheckout(); }
+});
+
+document.addEventListener("submit", async e => {
+  const form = e.target;
+  e.preventDefault();
+  const btn = form.querySelector("button[type=submit]");
+  if (form.id === "authForm") {
+    const isReg = !!form.querySelector("#aName");
+    const vals = { email: form.email.value, password: form.password.value, name: isReg ? form.name.value : "" };
+    const rules = { email: { required: true, email: true, value: vals.email }, password: { required: true, min: 8, value: vals.password } };
+    if (isReg) rules.name = { required: true, value: vals.name };
+    const errors = validate(rules); setFieldErrors(form, errors);
+    if (Object.keys(errors).length) return;
+    setBusy(btn, true);
+    try {
+      const data = await api(isReg ? "register" : "login", vals);
+      state.user = data.user || { email: vals.email, name: vals.name };
+      await refreshMembership();
+      location.hash = "#/dashboard";
+    } catch (err) { show($("#authStatus"), err.message); }
+    finally { setBusy(btn, false); }
+  }
+  if (form.id === "contactForm") {
+    const vals = { name: form.name.value, email: form.email.value, message: form.message.value };
+    const errors = validate({ name: { required: true, value: vals.name }, email: { required: true, email: true, value: vals.email }, message: { required: true, min: 10, value: vals.message } });
+    setFieldErrors(form, errors);
+    if (Object.keys(errors).length) return;
+    setBusy(btn, true);
+    try { await api("contact", vals); show($("#contactStatus"), "Message sent.", "ok"); form.reset(); }
+    catch (err) { show($("#contactStatus"), err.message + " Your message was not delivered."); }
+    finally { setBusy(btn, false); }
+  }
+  if (form.id === "ideaForm") {
+    const vals = Object.fromEntries(new FormData(form));
+    const errors = validate({ idea: { required: true, value: vals.idea }, audience: { required: true, value: vals.audience }, problem: { required: true, value: vals.problem } });
+    setFieldErrors(form, errors);
+    if (Object.keys(errors).length) return;
+    setBusy(btn, true);
+    try {
+      const data = await api("ideaValidate", vals);
+      const out = $("#ideaOut"); out.hidden = false; out.textContent = typeof data.result === "string" ? data.result : JSON.stringify(data.result, null, 2);
+      show($("#ideaStatus"), "Validation complete.", "ok");
+    } catch (err) { show($("#ideaStatus"), err.message); }
+    finally { setBusy(btn, false); }
+  }
+});
+
+document.addEventListener("click", async e => {
+  if (e.target.id === "refreshMembership") {
+    const btn = e.target;
+    setBusy(btn, true);
+    try { await refreshMembership(true); show($("#billStatus"), "Membership refreshed.", "ok"); render(); }
+    catch (err) { show($("#billStatus"), err.message); }
+    finally { setBusy(btn, false); }
+  }
+  if (e.target.id === "logout") {
+    try { await api("logout", {}); } catch { /* clear local state anyway */ }
+    state.user = null; state.plan = "free"; location.hash = "#/"; render();
+  }
+  if (e.target.id === "theme") {
+    const root = document.documentElement;
+    root.dataset.theme = root.dataset.theme === "dark" ? "light" : "dark";
+  }
+});
+
+async function refreshMembership(strict = false) {
+  if (!CONFIG.endpoints.membership) { if (strict) throw new ApiError("The membership endpoint is not configured yet."); return; }
+  const data = await api("membership", null, "GET");
+  state.plan = data.plan === "pro" ? "pro" : "free";
+}
+
+async function checkSession() {
+  try {
+    if (!CONFIG.endpoints.session) return;
+    const data = await api("session", null, "GET");
+    state.user = data.user || null;
+    if (state.user) await refreshMembership();
+  } catch { state.user = null; }
+  finally { state.authChecked = true; }
+}
+
+window.addEventListener("hashchange", render);
+(async () => {
+  if (window.matchMedia("(prefers-color-scheme: dark)").matches) document.documentElement.dataset.theme = "dark";
+  await checkSession();
+  render();
+})();
+</script>
+</body>
+</html>
