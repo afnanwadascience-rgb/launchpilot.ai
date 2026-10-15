@@ -1,0 +1,3 @@
+import Link from 'next/link';
+import { ArrowLeft, Compass } from 'lucide-react';
+export default function NotFound() { return <main className="container" style={{ minHeight: '70vh', display: 'grid', placeItems: 'center', textAlign: 'center' }}><div><div className="feature-icon" style={{ margin: '0 auto 16px' }}><Compass size={22}/></div><div className="eyebrow">404 · Off course</div><h1 style={{ fontSize: 38, letterSpacing: '-.05em', margin: '12px 0' }}>This page isn’t in the plan.</h1><p className="muted" style={{ maxWidth: 420, margin: '0 auto 22px' }}>The page may have moved or the link may be incorrect.</p><Link href="/" className="btn"><ArrowLeft size={15}/> Back to LaunchPilot</Link></div></main>; }
